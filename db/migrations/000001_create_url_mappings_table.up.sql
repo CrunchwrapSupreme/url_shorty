@@ -8,7 +8,7 @@ CREATE TABLE url_mappings (
        short_slug CHAR(20) UNIQUE NOT NULL CHECK(length(short_slug) > 0),
        long_url  VARCHAR(255) NOT NULL CHECK(length(long_url) > 0),
        protocol  VARCHAR(5) DEFAULT 'https',
-       owner_id  INTEGER,
+       owner_id  INTEGER DEFAULT NULL,
        FOREIGN KEY(owner_id) REFERENCES tenants(id)
 );
 

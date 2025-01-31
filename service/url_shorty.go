@@ -14,7 +14,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-
+	c "github.com/fatih/color"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -25,6 +25,12 @@ type UrlEntry struct {
 	ShortSlug string `json:"short_slug"`
 	LongUrl string  `json:"long_url"`
 	Protocol string `json:"protocol"`
+	OwnerId int64
+}
+
+type TokenEntry struct {
+	ID int64
+	Token string
 	OwnerId int64
 }
 
@@ -39,6 +45,22 @@ func (entry *UrlEntry) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func colorizeValue(text string) string {
+	col := c.New(c.Underline)
+	return col.Sprint(text)
+}
+
+func colorize(text string) string {
+	var keywords = [...]string{"RESOLVED", "FOR"}
+	var operators = [...]string{"->", "'", "slug", "(", ")", "dest"}
+	for _, ele := range keywords {
+		text = strings.ReplaceAll(text, ele, c.GreenString(ele))
+	}
+	for _, ele := range operators {
+		text = strings.ReplaceAll(text, ele, c.CyanString(ele))
+	}
+	return text
+}
 
 func redirect_handler(w http.ResponseWriter, r *http.Request) {
 	short_slug := r.PathValue("short_slug")
@@ -48,14 +70,34 @@ func redirect_handler(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 	} else {
 		h := w.Header()
-		log.Printf("Resolved %s -> %s FOR %s (%s)\n", short_slug, long_url, r.RemoteAddr, r.UserAgent())
+		var lstr strings.Builder
+		lstr.WriteString("RESOLVED")
+		lstr.WriteString(
+			fmt.Sprintf(
+				" slug(%s) -> dest(%s)",
+				short_slug,
+				colorizeValue(long_url),
+			),
+		)
+		lstr.WriteString(" FOR")
+		lstr.WriteString(fmt.Sprintf(" host(%s, %s)", r.RemoteAddr, r.UserAgent()))
+		log.Println(colorize(lstr.String()))
 		h.Set("Location", long_url)
 		w.WriteHeader(301)
 	}
 }
 
+
 func new_url_handler(w http.ResponseWriter, r *http.Request) {
 	var entry UrlEntry
+	token := r.Header.Get("Authorization")
+	token = strings.TrimSpace(token)
+	row := db.QueryRow("SELECT * FROM auth_tokens WHERE token = ? LIMIT 1", token)
+	err := row.Err()
+	if err != nil {
+		w.WriteHeader(401)
+		return
+	}
 	has_json := strings.ToLower(r.Header.Get("Content-Type")) == "application/json"
 	accepts := r.Header.Values("Accept")
 	accepts_json := slices.IndexFunc(accepts, func(mtype string) bool {
@@ -69,7 +111,7 @@ func new_url_handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Must have Accept: application/json in request", 400)
 		return
 	}
-	err := json.NewDecoder(r.Body).Decode(&entry)
+	err = json.NewDecoder(r.Body).Decode(&entry)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
 		log.Println(err.Error())
@@ -152,7 +194,7 @@ func generate_short_slug() (string, error) {
 	return encoded, nil
 }
 
-func make_token() (string, error) {
+func make_token_string() (string, error) {
 	data := make([]byte, 32)
 	_, err := rand.Read(data)
 	if err != nil {
@@ -161,6 +203,21 @@ func make_token() (string, error) {
 	checksum := sha256.Sum256(data)
 	encoded := base64.RawURLEncoding.EncodeToString(checksum[:])
 	return encoded, nil
+}
+
+func store_token(token_entry *TokenEntry, token string) error {
+	token_entry.Token = token
+	stmt := "INSERT INTO auth_tokens (token) VALUES (?)"
+	result, err := db.Exec(stmt, &token_entry.Token)
+	if err != nil {
+		return err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	token_entry.ID = id
+	return nil
 }
 
 
@@ -176,12 +233,13 @@ func main() {
 		log.Fatalln(pingErr)
 	}
 	log.Println("Sqlite3 connected to file://foo.db")
-	db.SetConnMaxLifetime(0)
-	db.SetMaxIdleConns(3)
-	db.SetMaxOpenConns(3)
+	db.SetConnMaxIdleTime(5)
+	db.SetConnMaxLifetime(10)
+	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(10)
 
 	http.HandleFunc("GET /{short_slug}", redirect_handler)
 	http.HandleFunc("POST /new-url", new_url_handler)
-	log.Println("HTTP server listening on 0.0.0.0:7777")
+	log.Printf("HTTP server listening on %s", colorizeValue("http://127.0.0.1:7777"))
 	log.Fatalln(http.ListenAndServe(":7777", nil))
 }
